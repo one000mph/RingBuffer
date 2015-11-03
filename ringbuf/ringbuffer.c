@@ -16,10 +16,10 @@ typedef struct
 	int quit; /* Non-zero if consumer should exit */
 } message_t;
 
-static typedef struct  {
-	message buf_array[BUF_SIZE];
-	void* input; // where to produce
-	void* output; // where to consume
+typedef struct  {
+	message_t buf_array[BUF_SIZE];
+	int input; // where to produce
+	int output; // where to consume
 	pthread_mutex_t buf_mutex; //protect buffer from modification by more than one thread at a time
 	pthread_cond_t allow_produce;    // allow when empty slots in buffer
 	pthread_cond_t allow_consume;     // allow when message exist in the buffer
@@ -55,51 +55,119 @@ int nsleep(long milliseconds)
    return nanosleep(&req , &rem);
 }
 
-
-void buf_init(ringbuf_t* buffer) {
-	buffer->input = 0;
-	buffer->output = 0;
-	// initialize mutex and conditions things here
-}
-
-message_t msg_init(int* line, int linenumber) {
-	return message_t msg = {
+message_t msg_init(int* line, int linenumber, int quit) {
+	message_t msg = {
 		.value = line[0],
 		.consumer_sleep = line[2],
 		.line = linenumber,
 		.print_code = line[3],
-		.quit = 0
+		.quit = quit
 	};
+	return msg;
 }
 
-void producer() {
+
+void producer(ringbuf_t* ringbuf, int num_itr) {
 	int line[4];
 	int lineNumber = 1;
 
+	int counter = 0;
+
 	// while unread content do stuff
-	while (scanf("%d %d %d %d", &line[0], &line[1], &line[2], &line[3]) > 0) {
-		int producer_sleep = line[1];
-		message_t msg = msg_init(line, lineNumber);
+	while (counter < num_itr) {
 
-		lineNumber++;
+		if (scanf("%d %d %d %d", &line[0], &line[1], &line[2], &line[3]) > 0){
 
-		// sleep for the given amount of time
-		int sleep_return = nsleep(line[1]);
+			int message = line[0];
+			int producer_sleep = line[1];
+			int print_code = line[3];
 
+			message_t msg = msg_init(line, lineNumber, 0);
+
+			// sleep for the given amount of time
+			int sleep_return = nsleep(producer_sleep);
+
+			// populate the ring buffer, iterate the input index
+			ringbuf->buf_array[ringbuf->input] = msg;
+
+			if( (print_code == 1) | (print_code == 3 )){
+				printf("Produced %d from input line %d\n", message, lineNumber);
+			}
+
+			counter++;
+			lineNumber++;
+		}
+
+		else{
+			//enter one more message without sleeping first
+			message_t msg = msg_init(line, lineNumber, 1);
+
+			int input_idx = ringbuf->input;
+			ringbuf->buf_array[input_idx] = msg;
+		}
+
+		// handle the ring wraparound 
+		if (ringbuf->input == (BUF_SIZE -1)){
+			ringbuf->input = 0; 
+		}
+		else{
+			(ringbuf->input)++;
+		}
 	}
-
-	// if 0, write message with non-zero quit field
 
 }
 
-void consumer() {
+void consumer(ringbuf_t* ringbuf, int num_itr) {
+	//running sum
+	int sum = 0;
 
+	while(ringbuf->output != ringbuf->input){
+		// read in the message
+		message_t message = ringbuf->buf_array[ringbuf->output];
+
+		if(message.quit != 0){
+			printf("The Final Sum is %d", sum);
+			return;
+			//Thread terminates here
+		}
+
+		int sleep_return = nsleep(message.consumer_sleep);
+
+		sum += message.value;
+
+		if((message.print_code == 2) | (message.print_code == 3)){
+			printf("Consumed %d from input line %d: sum = %d\n", message.value, message.line, sum);
+		}
+
+		// handle the ring wraparound 
+		if (ringbuf->output == (BUF_SIZE -1)){
+			ringbuf->output = 0; 
+		}
+		else{
+			(ringbuf->output)++;
+		}
+
+	}
 }
 
 int main (int argc, char *argv[]) {
+
 	setlinebuf(stdout);
 
+	// create and initialize ringbuffer
+	ringbuf_t buffer = {
+		.input = 0,
+		.output = 0
+	};
 
+	// FOR NOW produce some stuff
+	int num_itr = 6;
+
+	producer(&buffer, num_itr);
+	consumer(&buffer, num_itr);
+
+	producer(&buffer, num_itr);
+	consumer(&buffer, num_itr);
 
 	// pthread_t producer_thread;
 	// pthread_t consumer_thread;
