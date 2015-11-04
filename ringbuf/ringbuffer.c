@@ -64,7 +64,7 @@ void* producer(void* ringbuf) {
 	int line[4];
 	int lineNumber = 1;
 
-	ringbuf_t buffer = *((ringbuf_t) ringbuf);
+	ringbuf_t* buffer = (ringbuf_t*) ringbuf;
 
 	// while unread content read a line
 	while (scanf("%d %d %d %d", &line[0], &line[1], &line[2], &line[3]) > 0) {
@@ -123,26 +123,42 @@ void* producer(void* ringbuf) {
 	}
 	pthread_cond_signal(&buffer->allow_consume);
 	pthread_mutex_unlock(&buffer->buf_mutex);
+	return NULL;
 }
 
 void* consumer(void* ringbuf) {
 	//running sum
 	int sum = 0;
-	ringbuf_t buffer = *((ringbuf_t) ringbuf);
+	ringbuf_t* buffer = (ringbuf_t*) ringbuf;
 
 	// consume is possible
-	while(buffer->output != buffer->input){
+	while(1){
+
+		// check if the buffer is full, if so wait for the consumer to signal
+		pthread_mutex_lock(&buffer->buf_mutex);
+		if (buffer->count == 0) pthread_cond_wait(&buffer->allow_consume, &buffer->buf_mutex);
 
 		// read in the message
 		message_t message = buffer->buf_array[buffer->output];
 
+		buffer->count--;
+		// handle the ring wraparound 
+		if (buffer->output == (BUF_SIZE -1)){
+			buffer->output = 0; 
+		}
+		else{
+			(buffer->output)++;
+		}
+
 		// allow producer to continue producing
 		pthread_cond_signal(&buffer->allow_produce);
+		pthread_mutex_unlock(&buffer->buf_mutex);
 
 		if(message.quit != 0){
 			printf("The Final Sum is %d", sum);
-			return;
-			//Thread terminates here
+			int* sum_ptr = &sum;
+			pthread_exit(sum_ptr);
+			
 		}
 
 		// sleep for the appropriate amount of time
@@ -156,15 +172,8 @@ void* consumer(void* ringbuf) {
 			printf("Consumed %d from input line %d: sum = %d\n", message.value, message.line, sum);
 		}
 
-		// handle the ring wraparound 
-		if (buffer->output == (BUF_SIZE -1)){
-			buffer->output = 0; 
-		}
-		else{
-			(buffer->output)++;
-		}
-
 	}
+	return NULL;
 }
 
 int main (int argc, char *argv[]) {
@@ -188,8 +197,9 @@ int main (int argc, char *argv[]) {
 	// pthread_create(&producer_thread, NULL, producer, (void*)&buffer);
 
 	producer(&buffer);
-	// pthread_join(producer_thread, NULL);
+
 	pthread_join(consumer_thread, NULL);
+	// pthread_join(producer_thread, NULL);
 
 }
 
