@@ -18,11 +18,11 @@ typedef struct
 
 typedef struct  {
 	message_t buf_array[BUF_SIZE];
-	int input; // where to produce
-	int output; // where to consume
-	pthread_mutex_t buf_mutex; //protect buffer from modification by more than one thread at a time
+	int input; 						 // where to produce
+	int output; 					 // where to consume
+	pthread_mutex_t buf_mutex; 		 // protect buffer from modification by more than one thread at a time
 	pthread_cond_t allow_produce;    // allow when empty slots in buffer
-	pthread_cond_t allow_consume;     // allow when message exist in the buffer
+	pthread_cond_t allow_consume;    // allow when message exist in the buffer
 
 } ringbuf_t;
 
@@ -67,63 +67,72 @@ message_t msg_init(int* line, int linenumber, int quit) {
 }
 
 
-void producer(ringbuf_t* ringbuf, int num_itr) {
+void* producer(void* ringbuf) {
 	int line[4];
 	int lineNumber = 1;
 
-	int counter = 0;
+	ringbuf_t buffer = *((ringbuf_t) ringbuf);
 
-	// while unread content do stuff
-	while (counter < num_itr) {
+	// while unread content read a line
+	if (scanf("%d %d %d %d", &line[0], &line[1], &line[2], &line[3]) > 0){
+		int message = line[0];
+		int producer_sleep = line[1];
+		int print_code = line[3];
+		// initialize the message struct
+		message_t msg = msg_init(line, lineNumber, 0);
 
-		if (scanf("%d %d %d %d", &line[0], &line[1], &line[2], &line[3]) > 0){
+		// sleep for the given amount of time
+		int sleep_return = nsleep(producer_sleep);
 
-			int message = line[0];
-			int producer_sleep = line[1];
-			int print_code = line[3];
+		// populate the ring buffer, iterate the input index
+		pthread_mutex_lock(&buffer->buf_mutex);
+		buffer->buf_array[buffer->input] = msg;
+		pthread_mutex_unlock(&buffer->buf_mutex);
 
-			message_t msg = msg_init(line, lineNumber, 0);
-
-			// sleep for the given amount of time
-			int sleep_return = nsleep(producer_sleep);
-
-			// populate the ring buffer, iterate the input index
-			ringbuf->buf_array[ringbuf->input] = msg;
-
-			if( (print_code == 1) | (print_code == 3 )){
-				printf("Produced %d from input line %d\n", message, lineNumber);
-			}
-
-			counter++;
-			lineNumber++;
+		// print the status message if needed
+		if((print_code == 1) | (print_code == 3)){
+			printf("Produced %d from input line %d\n", message, lineNumber);
 		}
-
-		else{
-			//enter one more message without sleeping first
-			message_t msg = msg_init(line, lineNumber, 1);
-
-			int input_idx = ringbuf->input;
-			ringbuf->buf_array[input_idx] = msg;
-		}
-
-		// handle the ring wraparound 
-		if (ringbuf->input == (BUF_SIZE -1)){
-			ringbuf->input = 0; 
-		}
-		else{
-			(ringbuf->input)++;
-		}
+		counter++;
+		lineNumber++;
 	}
 
+	// handle EOF
+	else{
+		//enter one more message without sleeping first
+		// we use whatever happens to be in line since all
+		// fields will be ignored except for quit
+		message_t msg = msg_init(line, lineNumber, 1);
+		// add to buffer array
+		buffer->buf_array[buffer->input] = msg;
+	}
+
+	// reset to zero if currently at the last array index
+	if (buffer->input == (BUF_SIZE - 1)) {
+		buffer->input = 0;
+	} else {
+		(buffer->input)++;
+	}
+	// check if the producer has caught up to the consumer
+	if (buffer->input == buffer->output) {
+		// if so block the producer from producing any more stuff
+		pthread_cond_wait(&buffer->allow_produce, &buffer->buf_mutex);
+	}
 }
 
-void consumer(ringbuf_t* ringbuf, int num_itr) {
+void* consumer(void* ringbuf) {
 	//running sum
 	int sum = 0;
+	ringbuf_t buffer = *((ringbuf_t) ringbuf);
 
-	while(ringbuf->output != ringbuf->input){
+	// consume is possible
+	while(buffer->output != buffer->input){
+
 		// read in the message
-		message_t message = ringbuf->buf_array[ringbuf->output];
+		message_t message = buffer->buf_array[buffer->output];
+
+		// allow producer to continue producing
+		pthread_cond_signal(&buffer->allow_produce);
 
 		if(message.quit != 0){
 			printf("The Final Sum is %d", sum);
@@ -131,20 +140,23 @@ void consumer(ringbuf_t* ringbuf, int num_itr) {
 			//Thread terminates here
 		}
 
+		// sleep for the appropriate amount of time
 		int sleep_return = nsleep(message.consumer_sleep);
 
+		// add value to accumulator
 		sum += message.value;
 
+		// print consumer status when needed
 		if((message.print_code == 2) | (message.print_code == 3)){
 			printf("Consumed %d from input line %d: sum = %d\n", message.value, message.line, sum);
 		}
 
 		// handle the ring wraparound 
-		if (ringbuf->output == (BUF_SIZE -1)){
-			ringbuf->output = 0; 
+		if (buffer->output == (BUF_SIZE -1)){
+			buffer->output = 0; 
 		}
 		else{
-			(ringbuf->output)++;
+			(buffer->output)++;
 		}
 
 	}
@@ -159,23 +171,19 @@ int main (int argc, char *argv[]) {
 		.input = 0,
 		.output = 0
 	};
+	pthread_mutex_init(&buffer.buf_mutex, NULL);
+	pthread_cond_init(&buffer.allow_produce, NULL);
+	pthread_cond_init(&buffer.allow_consume, NULL);
 
-	// FOR NOW produce some stuff
-	int num_itr = 6;
+	pthread_t producer_thread;
+	pthread_t consumer_thread;
 
-	producer(&buffer, num_itr);
-	consumer(&buffer, num_itr);
+	pthread_create(&consumer_thread, NULL, consumer, (void*)&buffer);
+	// pthread_create(&producer_thread, NULL, producer, (void*)&buffer);
 
-	producer(&buffer, num_itr);
-	consumer(&buffer, num_itr);
-
-	// pthread_t producer_thread;
-	// pthread_t consumer_thread;
-	// pthread_create(&producer_thread, NULL, producer, (void*)&buf);
-	// pthread_create(&consumer_thread, NULL, consumer, (void*)&buf);
-
+	producer(&buffer);
 	// pthread_join(producer_thread, NULL);
-	// pthread_join(consumer_thread, NULL);
+	pthread_join(consumer_thread, NULL);
 
 }
 
