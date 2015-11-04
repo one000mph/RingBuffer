@@ -81,20 +81,10 @@ void* producer(void* ringbuf) {
 		// check if the buffer is full, if so wait for the consumer to signal
 		pthread_mutex_lock(&buffer->buf_mutex);
 		if (buffer->count == BUF_SIZE) pthread_cond_wait(&buffer->allow_produce, &buffer->buf_mutex);
-		pthread_mutex_unlock(&buffer->buf_mutex);
 
 		// populate the ring buffer with the message and iterate the count index
-		pthread_mutex_lock(&buffer->buf_mutex);
 		buffer->buf_array[buffer->input] = msg;
-		pthread_cond_signal(&buffer->allow_consume);
 		buffer->count++;
-		pthread_mutex_unlock(&buffer->buf_mutex);
-
-		// print the status message if needed
-		if((print_code == 1) | (print_code == 3)){
-			printf("Produced %d from input line %d\n", message, lineNumber);
-		}
-		lineNumber++;
 
 		// set input to the next valid buf_array index
 		if (buffer->input == (BUF_SIZE - 1)) {
@@ -103,15 +93,36 @@ void* producer(void* ringbuf) {
 		} else {
 			(buffer->input)++;
 		}
+		pthread_cond_signal(&buffer->allow_consume);
+		pthread_mutex_unlock(&buffer->buf_mutex);
+
+		// print the status message if needed
+		if((print_code == 1) | (print_code == 3)){
+			printf("Produced %d from input line %d\n", message, lineNumber);
+		}
+		lineNumber++;
 	}
 
-	// handle EOF
-	// enter one more message without sleeping first
-	// we use whatever happens to be in line since all
-	// fields will be ignored except for quit
+	// check if the buffer is full, if so wait for the consumer to signal
+	pthread_mutex_lock(&buffer->buf_mutex);
+	if (buffer->count == BUF_SIZE) pthread_cond_wait(&buffer->allow_produce, &buffer->buf_mutex);
+
+	// If EOF is read, enter one more message without sleeping first
+	// all fields will be ignored except for quit
 	message_t msg = msg_init(line, lineNumber, 1);
-	// add to buffer array
+	// populate the ring buffer with the message and iterate the count index
 	buffer->buf_array[buffer->input] = msg;
+	buffer->count++;
+
+	// set input to the next valid buf_array index
+	if (buffer->input == (BUF_SIZE - 1)) {
+		// reset to zero if currently at the last array index
+		buffer->input = 0;
+	} else {
+		(buffer->input)++;
+	}
+	pthread_cond_signal(&buffer->allow_consume);
+	pthread_mutex_unlock(&buffer->buf_mutex);
 }
 
 void* consumer(void* ringbuf) {
