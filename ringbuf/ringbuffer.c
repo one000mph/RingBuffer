@@ -20,19 +20,12 @@ typedef struct  {
 	message_t buf_array[BUF_SIZE];
 	int input; 						 // where to produce
 	int output; 					 // where to consume
+	int count;						 // count things in buffer
 	pthread_mutex_t buf_mutex; 		 // protect buffer from modification by more than one thread at a time
 	pthread_cond_t allow_produce;    // allow when empty slots in buffer
 	pthread_cond_t allow_consume;    // allow when message exist in the buffer
 
 } ringbuf_t;
-
-void sleep(int sleep_time) {
-	struct timespec time1, time2;
-	if (sleep_time > 999) {
-		time1.tv_sec = 1;
-		sleep_time -= 1000;
-	}
-}
 
 
 // Attribution: Found online at http://stackoverflow.com/questions/7684359/using-nanosleep-in-c
@@ -74,50 +67,51 @@ void* producer(void* ringbuf) {
 	ringbuf_t buffer = *((ringbuf_t) ringbuf);
 
 	// while unread content read a line
-	if (scanf("%d %d %d %d", &line[0], &line[1], &line[2], &line[3]) > 0){
+	while (scanf("%d %d %d %d", &line[0], &line[1], &line[2], &line[3]) > 0) {
 		int message = line[0];
 		int producer_sleep = line[1];
 		int print_code = line[3];
+
 		// initialize the message struct
 		message_t msg = msg_init(line, lineNumber, 0);
 
 		// sleep for the given amount of time
 		int sleep_return = nsleep(producer_sleep);
 
-		// populate the ring buffer, iterate the input index
+		// check if the buffer is full, if so wait for the consumer to signal
+		pthread_mutex_lock(&buffer->buf_mutex);
+		if (buffer->count == BUF_SIZE) pthread_cond_wait(&buffer->allow_produce, &buffer->buf_mutex);
+		pthread_mutex_unlock(&buffer->buf_mutex);
+
+		// populate the ring buffer with the message and iterate the count index
 		pthread_mutex_lock(&buffer->buf_mutex);
 		buffer->buf_array[buffer->input] = msg;
+		pthread_cond_signal(&buffer->allow_consume);
+		buffer->count++;
 		pthread_mutex_unlock(&buffer->buf_mutex);
 
 		// print the status message if needed
 		if((print_code == 1) | (print_code == 3)){
 			printf("Produced %d from input line %d\n", message, lineNumber);
 		}
-		counter++;
 		lineNumber++;
+
+		// set input to the next valid buf_array index
+		if (buffer->input == (BUF_SIZE - 1)) {
+			// reset to zero if currently at the last array index
+			buffer->input = 0;
+		} else {
+			(buffer->input)++;
+		}
 	}
 
 	// handle EOF
-	else{
-		//enter one more message without sleeping first
-		// we use whatever happens to be in line since all
-		// fields will be ignored except for quit
-		message_t msg = msg_init(line, lineNumber, 1);
-		// add to buffer array
-		buffer->buf_array[buffer->input] = msg;
-	}
-
-	// reset to zero if currently at the last array index
-	if (buffer->input == (BUF_SIZE - 1)) {
-		buffer->input = 0;
-	} else {
-		(buffer->input)++;
-	}
-	// check if the producer has caught up to the consumer
-	if (buffer->input == buffer->output) {
-		// if so block the producer from producing any more stuff
-		pthread_cond_wait(&buffer->allow_produce, &buffer->buf_mutex);
-	}
+	// enter one more message without sleeping first
+	// we use whatever happens to be in line since all
+	// fields will be ignored except for quit
+	message_t msg = msg_init(line, lineNumber, 1);
+	// add to buffer array
+	buffer->buf_array[buffer->input] = msg;
 }
 
 void* consumer(void* ringbuf) {
@@ -169,7 +163,8 @@ int main (int argc, char *argv[]) {
 	// create and initialize ringbuffer
 	ringbuf_t buffer = {
 		.input = 0,
-		.output = 0
+		.output = 0,
+		.count = 0
 	};
 	pthread_mutex_init(&buffer.buf_mutex, NULL);
 	pthread_cond_init(&buffer.allow_produce, NULL);
